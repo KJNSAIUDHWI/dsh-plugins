@@ -1,0 +1,43 @@
+dsh 插件目录
+建立 2026-09-18
+
+这里放 dsh（DeepSeek Harness）的第三方插件，一个插件一个文件夹。
+文件夹名用英文（ASCII），每个插件文件夹里放一份中文 说明.txt。
+
+--------------------------------------------------------------
+插件放哪儿不影响 dsh —— dsh 只看 profile 名单：
+
+    C:\Users\25495\.dsh\profiles\web\package.json
+      dependencies 里一行：   "dsh-purge": "link:D:/Dev/dsh-plugins/dsh-purge"
+      dsh.profile.bundles 里一行：   "dsh-purge"
+
+装插件时 pnpm 会在 profiles\web\node_modules\ 下建一个 junction（目录联接）
+指回这里的源码目录。所以：
+
+    换位置 = 改上面那一行 link: 路径 + 重跑一次安装
+
+重跑安装的命令（在 profiles\web 目录下执行）：
+    dsh plugin --profile web add "link:D:/Dev/dsh-plugins/<插件名>"
+
+--------------------------------------------------------------
+当前内容
+
+    dsh-purge\     提示词与沙箱管理器（原「破甲插件」，本机正在改造）
+                   详细说明见它文件夹里的 说明.txt
+
+另有两个第三方插件是 2026-09-18 从 npm 装的，不在这个文件夹里：
+    meow-memory        跨会话记忆（npm 装 → profiles\web\node_modules\meow-memory）
+    meow-cachebilling  上下文缓存账单（同上）
+为什么没放这儿：这两个是原样使用的成品，作者在 npm 上发的是构建好的包；
+本机没有 git，原本的 github 安装方式用不了，所以走 npm。
+它们的挂载点、版本、改了哪些官方文件，以后可以在 dsh-purge 的
+「插件」标签页里查（那是 dsh-purge 改造里的功能）。
+
+--------------------------------------------------------------
+注意
+
+- 别删 profiles\web\node_modules\ 里的 junction，dsh 靠它找插件
+- 装插件会跑一次 pnpm install，可能把 dsh-purge 打在官方代码上的补丁还原；
+  重启 dsh 时 autoApplyOnStart 会自动重打（重打完应为 35 个 .dshpurge.bak）
+- 这个目录只放插件源码。插件运行时产生的数据不放这里，在
+  C:\Users\25495\.dsh\ 下面（配置、密钥、会话、提示词套都在那儿）

@@ -1,0 +1,210 @@
+dsh-purge —— 提示词与沙箱管理器
+上游：github.com/YuJunZhiXue/dsh-purge（本机这份已被改造过两轮，还在改）
+说明写于 2026-09-18（挪进 dsh-plugins 那一天）
+
+--------------------------------------------------------------
+【现在是什么】
+
+功能上：把 dsh 的「破甲提示词注入」和「沙箱/审批拆掉」做成可开关的分组补丁，
+       再带一套提示词套管理和规则集管理。
+
+改造目标（进行中）：从「破甲插件」变成「提示词与沙箱管理器」，设置页拆成
+       概览 | 提示词 | 规则 | 沙箱&门禁 | 插件 | 高级 几个标签页。
+
+--------------------------------------------------------------
+【本体在哪儿】
+
+    D:\Dev\dsh-plugins\dsh-purge              ← 源码，就是当前这个文件夹
+    C:\Users\25495\.dsh\profiles\web\node_modules\dsh-purge
+                                    ↑ junction（目录联接），指向上面那份源码
+
+名单记录在：C:\Users\25495\.dsh\profiles\web\package.json
+    dependencies:          "dsh-purge": "link:D:/Dev/dsh-plugins/dsh-purge"
+    dsh.profile.bundles:   [ ... , "dsh-purge" ]
+
+2026-09-18 从 D:\Dev\dsh-purge 挪到这里。挪动前确认过：代码里没有写死自己的
+绝对路径（用的是 findDshHome() 和 os.tmpdir()），所以只有上面那一行要改。
+
+--------------------------------------------------------------
+【数据在哪儿】
+
+这些永远在 dsh 数据目录里，不跟源码走，挪目录也不会动：
+
+    C:\Users\25495\.dsh\dsh-purge.json       分组开关状态
+    C:\Users\25495\.dsh\prompt-inject.md     当前生效的注入正文（约 41.9 KB）
+    C:\Users\25495\.dsh\purge-prompts\       提示词套（多套，state.json 记激活哪套）
+    C:\Users\25495\.dsh\AGENTS.md            规则集激活后写到这儿（启用后才是官方全局指令）
+
+--------------------------------------------------------------
+【怎么操作】
+
+设置页：dsh 网页 → 设置 → 「破甲 · 沙箱」→ 六个标签页
+        概览 / 提示词 / 规则 / 沙箱 & 门禁 / 插件 / 高级
+命令行：node D:\Dev\dsh-plugins\dsh-purge\bin\dsh-purge.js --status
+        （--groups / --group <组> on|off / --sync / --revert / --prompts）
+会话里：/purge status | apply | revert | groups | group <组> on|off | help
+
+HTTP 路由都挂在 /dsh-purge/ 下（status / apply / revert / group / override /
+config / identity / shim / prompts/* / rules/* …）。
+CLI 和 HTTP 路由共用 lib\core.js —— 加新功能时照这个范式来，双入口。
+
+--------------------------------------------------------------
+【改代码的规矩】
+
+- client.js 是手写前端，不是构建产物，直接改，改完刷新网页即可
+- lib\*.js 是插件入口和核心，改完要重启 dsh（启动时读进内存）
+- 提示词文件改完下一句就生效（每轮现读文件）
+- 改完至少跑一遍 node --check <文件> 过语法
+- 动代码前先整目录复制一份到 D:\temp\<当刻时间>_<用途>\
+
+--------------------------------------------------------------
+【必须知道的坑】
+
+1. sandbox（沙箱）和 approval（审批）两组必须同开同关。
+   只关一组会拼出 dsh 预设表里没有的组合，dsh 启动直接抛错、窗口一闪就关：
+       permission: composed sandbox and approval defaults match no preset
+   代码里已有联动和兜底（lib\core.js 的 COUPLED_GROUPS、normalizeDisabledGroups），
+   重构界面时别把这段逻辑弄丢。
+
+2. 补丁改的是官方文件，dsh 升级会覆盖掉。靠 autoApplyOnStart 每次启动检查重打。
+   X.dshpurge.bak 是改前的原件备份，也是还原的唯一依据 —— 别当垃圾删。
+   正确状态：官方代码树里 34 个 + profiles\web\ 里 1 个 = 35 个 .dshpurge.bak，
+   涉及 26 个官方包。
+
+3. 装任何插件都会跑一次 pnpm install，可能把补丁还原。
+   正确顺序：装插件 → 重启 dsh（自动重打）→ 查补丁数是否回到 35。
+
+4. cmd 控制台按 GBK 显示中文会乱码，路径尽量用 ASCII，打印中文注意编码。
+
+5. 「隐藏黑框」开关只管 dsh.ps1 和 dsh 两个启动器 —— dsh.cmd **永远不被注入**
+   （lib\core.js:3534：.cmd 由 cmd.exe 起、必定闪窗，注入了也没用，所以只做清理）。
+   所以判断这个开关是开还是关，只能看 ps1/unix：拿 shim_cmd === "patched" 判断
+   会永远显示"未隐藏"（界面里 shimHidden() 就是这么改的）。
+
+6. dsh-purge.json 现在同时放「分组开关」和「运行时开关」（enabled/autoApplyOnStart/
+   verbose），所以写配置必须合并写（core.writePurgeConfig），
+   不能用旧写法整份覆盖 —— 那会把另一边的开关抹掉。
+   enabled 是**软开关**：关掉只停注入和开机自动重打，插件照旧加载、
+   设置页照旧能用（否则关掉就再也点不回来了）。要彻底不加载：
+   改 cordis.patch.yml 里的 enabled: false（硬关）。
+
+7. 身份层（破甲身份 / 官方原版身份 / 无身份）是**改写插件自己的 cordis.patch.yml** 实现的，
+   重启 dsh 生效。dsh 启动时从**包目录**读这个文件（@deepseek-ai/dsh-app-boot 的
+   loadProfileDirectory），所以改它有用；改完可以先跑
+   `dsh --profile web --dump-config` 验证还能组合出配置树（不会启动服务）。
+   切走「破甲身份」时，那段 persona 会缓存进 dsh-purge.json 的 personaPrefix，
+   切回来时用它还原 —— 否则你会丢掉自己手改过的 persona 文本。
+   X.dshpurge.bak 是它改写前的原件备份。
+
+8. 本机启动 dsh 的正常方式是双击/运行 `D:\Dev\dsh\dsh-cleanstart.cmd`：
+   它**先杀掉占用 3080 的进程**再 `dsh web`。为什么要先杀 —— 插件的「重启」按钮
+   （scheduleWebRestart）起的是一个**没有窗口的游离进程**，它一直占着端口，
+   之后直接起 dsh 会 `listen EADDRINUSE ... 3080` 一闪而过。
+   所以：别在 dsh 已经跑着的时候又去双击它（它会先把当前实例杀掉）。
+
+9. 插件管理器（「插件」页 / `--plugins`）的底账是 `*.dshpurge.bak` 标记：
+   归属 = 标记文件名的最后一段（`cordis.patch.yml.dshpurge.bak` → `dshpurge`），
+   归一化后和插件名比（`dsh-purge` / `dshpurge` 算同一个）。
+   所以**别的插件只要按 `<文件>.<自己名字>.bak` 的约定留标记，这个管理器也能认出来**；
+   没留标记的插件显示「无改动记录」是正确答案。
+10. 扫描成本：官方树 + profile 一共约 3300 个目录、~800 ms（实测），
+   所以 lib\plugman.js 里缓存 20 秒；界面上的「重新扫描」= `?force=1`。
+   目录递归用 realpath 去重防环（node_modules 里 junction 很多），深度上限 9。
+11. 自报（core.patchTargets）vs 实扫 会出差集，现在实测到一条真实的未声明改动：
+   `C:\Users\25495\.dsh\profiles\web\cordis.patch.yml` —— 插件确实在改它
+   （live patch 那套逻辑），但它不在 PATCHES 表里，所以「自报」永远不含它。
+   界面/CLI 把这种列在「实扫有、自报没有」下面，属于有意暴露，不是 bug。
+
+--------------------------------------------------------------
+【改造记录】
+
+2026-09-18（这次）
+  1. 目录从 D:\Dev\dsh-purge 挪到 D:\Dev\dsh-plugins\dsh-purge
+     （profile 名单同步改，junction 重建；代码里没有写死绝对路径）
+  2. 修 bug：破甲提示词被注入两次
+     - 原因：lib\identity.js 把正文折进 persona 前缀的同时，又把同名 section 原样拼回去
+     - 更麻烦的是：hook 在 lib\index.js 里注册了 4 层，同一份 assembly 会被处理 4 遍，
+       而折进 persona 的正文会被下一层的「官方身份清洗」改写，导致去重锚点失效、每层再叠一份
+     - 改法：正文折进 persona 后丢掉它自己的 section；去重按「已以正文开头」判断而不是精确子串；
+       顺带让正文与其后的 rules/post 段不再被身份清洗改写（正文必须一字不改）
+     - 实测：系统提示词 87,095 → 47,283 字符，正文出现 1 次且在偏移 0
+     - 附带修正：总开关（enabled）关掉时，正文不会再被兜底逻辑从文件里捡回来
+  3. 修 bug：设置页补丁表的分组和上面的分组开关不是同一套
+     - 原因：client.js 里另写死了一份 PATCH_GROUPS（提示词/代码/引擎/工具/兼容）
+     - 改法：删掉那份写死的，补丁表直接读服务端 /dsh-purge/status 的 groups
+       （和分组开关同一份数据），并顺带把分组开关的标题从原始 id 换成中文名、
+       补丁行同时显示中文名与代码里的英文名
+     - 实测：设置页 5 组 = 提示词 9/11 · 沙箱 8/8 · 审批 9/9 · 工具上限 10/10 · 0.1.5 兼容 2/2
+
+  4. 修 bug：规则集（AGENTS.md）会双重注入
+     - 原因：lib\rules.js 把规则写进 $DSH_HOME\AGENTS.md，而 dsh 官方的
+       dsh-agent-instructions 本来就把这个文件当「用户全局指令」读进每个会话
+       （已核实在装好的官方包里：lib\index.js:141 USER_GLOBAL_FILE = "AGENTS.md"，
+       :561 join(config.dshHome, USER_GLOBAL_FILE)），插件又注册了一个
+       "dsh-purge:rules" 段，同一份文本进系统提示词两次
+     - 改法：删掉插件自己那个段（lib\index.js 的 registerPromptSections），
+       交付交给官方读取；规则集的管理（列表/编辑/启用/删除）仍在设置页和 HTTP 路由里。
+       rules.js 的 activeRuleText() 保留但不再用于注入（只留给状态展示/CLI）
+     - 副作用：现在规则是否进提示词，不再受插件 enabled 开关影响 —— 关掉破甲不会
+       顺手摘掉 AGENTS.md（想摘就在设置页「规则集」里删或还原那个文件）
+     - 配套：C:\Users\25495\.dsh\AGENTS.md 已建立（文件纪律：临时产物放 D:\temp\<时间>_<用途>\，
+       真项目放 D:\data\dsh\<类别>\<项目名>\），另有 skill C:\Users\25495\.dsh\skills\fpga-lab\
+
+2026-09-18（第二轮：GUI 多标签重构 B9 + B3 + B4 + B7）
+  1. B9 设置页拆成六个标签页：概览 / 提示词 / 规则 / 沙箱 & 门禁 / 插件 / 高级。
+     标签是「懒挂载 + 挂上不卸」：没点过的页不发请求，点开过的一直挂着，
+     所以切标签不会丢编辑器里没保存的内容。导航名从「规则设定」改成「破甲 · 沙箱」。
+     - 概览：指标 + 提示词/工具上限/兼容 三个分组开关 + 全部补丁表 + 应用/还原/重启
+     - 沙箱 & 门禁：沙箱/审批两个开关（权限相关，单独一页）+ 文件门禁现状
+       （C4 的 hook 硬闸用户明确说不做，这里只显示 AGENTS.md 交付现状）
+     - 插件：关键路径清单（D1-D3 文件树/卡片/CLI 还没做）
+  2. B3 补上缺的开关（新页「高级」）：
+     - enabled（软总开关）/ autoApplyOnStart / verbose：存 dsh-purge.json，
+       前两个（enabled/verbose）立刻生效，autoApplyOnStart 下次启动生效
+     - 隐藏黑框：按钮直接调 core.patchAllShims()/revertAllShims()
+     - 新路由：GET/POST /dsh-purge/config · POST /dsh-purge/shim
+  3. B7 身份层三选一（高级页）：破甲身份 / 官方原版身份 / 无身份，
+     实现是改写插件自己的 cordis.patch.yml（见上面「必须知道的坑」第 7 条）。
+     新路由：POST /dsh-purge/identity。新文件 lib\runtime.js。
+  4. B4 提示词套管理重做（提示词页）：
+     - 列表视图：名字 / 大小 / token 估算 / 行数 / 首行预览 / 激活星标 / 未保存标记
+       + 搜索（名字或内容开头）+ 启用 / 预览（弹层）/ 复制 / 改名 / 导出 .md /
+         删除（带确认）/ 新建空套 / 导入 .md
+     - 编辑器：行号、查找（下一个/上一个 + 命中数）、字节数 / 行数 / token 实时估算、
+       保存 / 放弃改动、未保存改动拦截（切套、新建、删除、关页面都先问一句）
+     - 服务端：prompts.js 新增 estimateTokens / promptStats / createPrompt /
+       copyPrompt / renamePrompt；新路由 write / create / import / rename / duplicate
+     - 行为修正：删掉激活那套时，prompt-inject.md 也一并清空（原来只清状态，
+       界面显示"没激活"但模型还在吃那段正文，状态对不上）
+  5. 改动文件：client.js（重写为多标签）、lib\prompts.js、lib\index.js、
+     lib\core.js（配置合并写）、新增 lib\runtime.js、cordis.patch.yml 未变（身份层是切了才变）
+     实测：见 D:\temp\2026-09-18-17-07_gui多标签重构\ 下的 test-server / test-http /
+     check-client 三份脚本与输出；身份层往返后 yml SHA256 与改造前一致。
+
+2026-09-18（第三轮：插件管理器 D1-D3）
+  1. 新文件 lib\plugman.js（谁装了 / 本体在哪 / 它自己的文件树 / 它改了哪些文件 / 改前改后 diff）
+     - 两条腿：实扫磁盘上的 *.dshpurge.bak（ground truth）+ dsh-purge 的 core.patchTargets() 自报
+     - 顺带白捡 diff：.bak 就是改前的原件，零成本（行级 LCS，砍掉公共前后缀，带行号）
+  2. core.js 新增导出 patchTargets(aiBase)：每个补丁 → 它会改的文件（自报口径）
+  3. HTTP：GET /dsh-purge/plugins（列表+改动总览+差集）、/plugins/tree?name=&depth=、
+     /plugins/diff?path=（只认有 .bak 兄弟的文件，所以它不会变成通用文件浏览器）
+  4. CLI（D3，AI 可直接驱动）：--plugins [名字] / --changes / --diff <文件> /
+     --tree <插件名|目录> [--depth N]，全部支持 --json
+  5. GUI（D1/D2）：「插件」页 = 插件列表（安装方式/本体/改了哪些）+ 点一行出卡片
+     （本体位置、真实路径、版本、dshTarget、带前端、bundle 补丁、说明、它自己的文件树）
+     + 「dsh 代码树里被改的文件」按包分组的文件树，每个文件一个「看 diff」
+     + 「自报 vs 实扫」差集；重新扫描按钮（扫描缓存 20 秒）
+  6. 实测：HTTP 25 条断言全过（插件 5 条 / 35 个被改文件 / 27 个包 / 差集 1 条未声明改动）；
+     界面走查：列表、卡片、文件树（29 节点）、diff 弹层（-1/+1 行、带行号）都对；
+     CLI 四种模式输出正常（含 --json）。插件管理器全程只读，不动任何数据文件。
+
+--------------------------------------------------------------
+【备份】
+
+2026-09-18 挪目录前的完整基线（代码 + 数据）：
+
+    D:\temp\2026-09-18-15-38_dsh-purge重构前基线\
+        dsh-purge\           代码整目录
+        data\                dsh-purge.json / prompt-inject.md / purge-prompts\
+
+要退回改动，把 dsh-purge\ 覆盖回来即可（数据文件按需单独还原）。
